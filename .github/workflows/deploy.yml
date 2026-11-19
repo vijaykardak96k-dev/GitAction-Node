@@ -1,0 +1,125 @@
+
+name: Node.js Multi-Stage CI-CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+
+  # STAGE 1 - TEST
+  test:
+    name: Stage 1 - Code Testing
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Tests
+        run: npm test
+
+
+  # STAGE 2 - PACKAGE
+  package:
+    name: Stage 2 - Package Application
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Create Deployment Package
+        run: |
+          mkdir release
+          cp package.json package-lock.json server.js ecosystem.config.js release/
+          tar -czf release.tar.gz -C release .
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodejs-release
+          path: release.tar.gz
+          retention-days: 5
+
+
+  # STAGE 3 - DEPLOY
+  deploy:
+    name: Stage 3 - EC2 Deployment
+    needs: package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: nodejs-release
+          path: release
+
+      - name: Prepare EC2 Directory
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            mkdir -p ~/nodeapp
+
+      - name: Transfer Application
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "release.tar.gz"
+          target: "/home/${{ secrets.EC2_USERNAME }}/nodeapp/"
+
+      - name: Install and Start Application
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd ~/nodeapp
+
+            tar -xzf release.tar.gz
+
+            npm ci --omit=dev
+
+            pm2 startOrReload ecosystem.config.js --env production
+
+            pm2 save
+
+
+  # STAGE 4 - VERIFY
+  verify:
+    name: Stage 4 - Deployment Verification
+    needs: deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check Application Health
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            pm2 status
+            curl -f http://127.0.0.1:3000/health
+            echo "Deployment verified successfully!"
