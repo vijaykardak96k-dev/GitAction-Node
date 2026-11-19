@@ -64,8 +64,10 @@ jobs:
           name: nodejs-release
           path: ./release
 
-      - name: Verify Release Package
-        run: ls -lh ./release/release.tar.gz
+      - name: Prepare Archive for Transfer
+        run: |
+          cp ./release/release.tar.gz ./release.tar.gz
+          ls -lh ./release.tar.gz
 
       - name: Prepare EC2 Directory
         uses: appleboy/ssh-action@v1.2.0
@@ -82,9 +84,8 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          source: "./release/release.tar.gz"
+          source: "release.tar.gz"
           target: "/home/${{ secrets.EC2_USERNAME }}/nodeapp/"
-          strip_components: 1
 
       - name: Install and Start Application
         uses: appleboy/ssh-action@v1.2.0
@@ -93,9 +94,14 @@ jobs:
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            set -e
             cd ~/nodeapp
+
+            ls -lh release.tar.gz
             tar -xzf release.tar.gz
+
             npm ci --omit=dev
+
             pm2 startOrReload ecosystem.config.js --env production
             pm2 save
 
@@ -112,6 +118,7 @@ jobs:
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            set -e
             pm2 status
             curl -f http://127.0.0.1:3000/health
             echo "Deployment verification successful!"
